@@ -1,0 +1,150 @@
+---
+title: "Analysis of the survey effort with BSBI records"
+author: "Natural England"
+date: "29/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = F, warning=F, message=F, cache=TRUE)
+#knitr::opts_knit$set(root.dir = 'D:/BSBI_HeatMaps/DataLayers/')
+
+#load packages
+require(tidyverse)
+require(sf)
+require(knitr)
+require(data.table)
+require(gridExtra)
+require(plotly)
+library(Hmisc)
+
+```
+
+## Survey Effort Analysis
+
+This sets out the approach for establishing good survey coverage within a monad or where further survey may be required. A survey day is defined as a day when over 40 species have been recorded in a single list on a single day within a monad. 
+
+```{r surveydays, echo=F, warning=F, message=F, eval=F}
+#load in monad template
+all_Eng_monad_region <- st_read( 'OS BNG grids/Eng_OS_monad_region.shp',quiet = TRUE)
+
+#load recording days per monad
+surveyMonad <- st_read('heatmap_reports_GB_20211129/heatmap_recording_effort_report_2021_11_29.shapefiles/results/recordingdays1000_VC1-VC112.shp',quiet = TRUE) %>% st_drop_geometry() %>%
+   filter(!region_nam %in% c("Scottish highlands and islands","Scottish lowlands","Scottish highlands and islands,Scottish lowlands","Wales" )) %>% select(-region_nam) 
+names(surveyMonad) <- c('monad','SurveyDays1km_40')
+#join days to template
+Eng_surveyEffort <- all_Eng_monad_region  %>% left_join(surveyMonad, by='monad')  %>%
+  mutate(SurveyDays1km_40=replace_na(SurveyDays1km_40,0))
+
+```
+
+## Recording days data
+
+A summary of the survey days data is shown below.With the exception of a few outliers where monads have been well recorded, the majority of monads have had low recorder day coverage, with 95% of monads having had 5 or fewer recorder days and 25% of the monads with 0 days cover. 
+
+```{r summaryTable, echo=F}
+#summary data
+
+describe(Eng_surveyEffort$SurveyDays1km_40)
+
+```
+
+```{r histogram,fig.show="hold", out.width="50%"}
+
+#Analysis of survey effort days
+p1 <- ggplot(Eng_surveyEffort, aes(x=SurveyDays1km_40)) +
+  geom_histogram(binwidth=1)  + 
+    scale_y_sqrt() + xlab("Number of survey days (>=40 taxas recorded)") 
+#with range limits
+p2 <- ggplot(Eng_surveyEffort, aes(x=SurveyDays1km_40)) + 
+  geom_histogram(binwidth=1) + xlim(0,18) + xlab("Number of survey days (>=40 taxas recorded)")
+
+ grid.arrange(p1, p2, ncol=2)
+
+```
+
+These show the majority of monads have below 2 recording days, with the most well surveyed monad having over 126 recording days. Comparing this regionally, we can see some areas having been sampled better than others. However, this will also be dependent upon the size of the defined region and the distance of monads from urban areas, with those closer to people living in urban areas showing greater survey coverage. This could explain why monads in London has comparatively a greater number of mean survey days than the rest of the country. Both alien and native species are included in the lists, which may also be why London comes out higher in the list,  and why there is this variation moving north, where less species are present generally which would have some influence on the number of lists achieving over 40 species.
+
+```{r boxplot}
+p3 <- ggplot(data = Eng_surveyEffort, aes(y = SurveyDays1km_40, x=RGN20NM, fill=RGN20NM)) + geom_boxplot() +
+    theme(legend.position="none") +
+    xlab("") + ylab("Number of survey days (>=40 taxas recorded)") +   
+    scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) + ylim(0,10)
+
+plotly::ggplotly(p3)
+```
+
+## Comparison with the total number of taxa recorded against survey days
+
+The total number of taxa recorded for each monad was extracted and compared to the number of survey days to establish how many survey days demonstrated good coverage of a monad.
+
+```{r taxa}
+
+taxacount <- st_read('heatmap_reports_GB_20211129/heatmap_species_counts_report_2021_11_29.shapefiles/results', quiet=T) %>% st_drop_geometry()
+monad_survey <- Eng_surveyEffort %>% st_drop_geometry() %>% left_join(taxacount,by="monad")
+
+ggplot(monad_survey, aes(x=SurveyDays1km_40, y=total_freq)) +
+  geom_point() + geom_smooth() 
+
+```
+
+
+```{r stat}
+p4 <- ggplot(monad_survey, aes(x=SurveyDays1km_40, y=total_freq)) +
+  geom_point() + geom_smooth() +xlim(0,50)
+
+ggplotly(p4)
+
+```
+
+These plots demonstrate a strong relationship between the total number of taxa and the survey days per monad. Plotting a linear model between the two variables we can see that these ...
+
+```{r correlation}
+#pearsons correlation
+cor.test(monad_survey$SurveyDays1km_40, monad_survey$total_freq)
+
+```
+
+```{r regression}
+#linear regression
+linearMod <- lm(SurveyDays1km_40 ~ total_freq, data=monad_survey) 
+summary(linearMod) 
+
+```
+
+This relationship predicts that 200 species are recorded after 3 recording days, 300 after roughly 5 recording days and 500 after 8 recording days.
+
+```{r predict}
+predict(linearMod, data.frame(total_freq=200))
+predict(linearMod, data.frame(total_freq=300))
+predict(linearMod, data.frame(total_freq=500))
+
+```
+
+Plotting these against each other by region we can see all the regions demonstrate this levelling off. The below range is restricted to just records with 30 survey days or less to make this easier to compare across regions and remove outliers. This shows after approximately 3 days this slower increase across sites in the taxa found where total number of taxa exceeds 200, with 5 days giving well recording plots of around 250-300 taxa which then tends to level off. This doesn't show huge variation between regions with overall similar numbers of taxa found between the different regions, averaging at 113 ± 47 species.
+
+```{r regionalRelationshipTable}
+#mean number of taxa per region
+summ <- monad_survey %>% group_by(RGN20NM) %>% summarise(meanFreq=mean(total_freq, na.rm=T), minFreq = min(total_freq,na.rm=T), maxFreq = max(total_freq,na.rm=T))
+
+mean(summ$meanFreq)
+sd(summ$meanFreq)
+
+summ
+```
+
+```{r regionalRelationshipPlot}
+
+#plotting differences
+p5 <- ggplot(monad_survey, aes(x=SurveyDays1km_40, y=total_freq, fill=RGN20NM)) +
+  geom_point(show.legend = F) + geom_smooth(show.legend = F) +xlim(0,30) + ylim(0,1000)
+
+p5 + facet_wrap(~RGN20NM, ncol = 3)
+
+```
+
+## Conclusion
+
+As a result of this analysis, we have chosen a benchmark of 3 recorder days after which a site is considered to be well recorded.  Therefore an absence of data at a site with over 3 recorder days will be assumed to contain no indicators present.
+

@@ -1,0 +1,461 @@
+---
+title: "Botanical Value MapWorkflow - Habitat quality analysis"
+author: "Natural England"
+date: "16/03/2022"
+output:
+  html_document:
+    includes:
+      before_body: 'D:/Github/BotanicalHeatmaps/images/header.html'
+always_allow_html: yes
+---
+
+```{r setup, include=F}
+
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+
+#load packages
+require(tidyverse)
+require(sf)
+require(ggpubr)
+library(viridis)
+library(tmap)
+library(furrr)
+library(RColorBrewer)
+
+source('HeatMapWorkflow_functions.R')
+```
+
+## Project Background
+
+The botanical value map is a categorised map identifying areas of high, moderate and low value for plant species. These are derived from the botanical heatmaps and assess the presence of priority species and positive habitat indicators that confirm the present of good quality semi-natural habitat.This was developed for the purpose of helping to inform screening of tree planting activities and other land management decisions. 
+
+The botanical value of a monad will be determined by two steps:
+
+1. A first screen of sites where priority species have been recorded. These are species which are GB rare, scarce or threatened species. These are given a "High" value status, where any listed priority species have been recorded within a monad between 1970 and 2021.
+
+2. Habitat quality is then assessed through observing the number of positive habitat indicators present per monad. These indicators have been determined from the BSBI axiophyte list, common standards monitoring and ancient woodland indicator species. The total for the monad has then been compared to the total species indicators present in the surrounding neighbourhood in order to alleviate some of the spatial bias in the data. Different methods for establishing the neighbourhood as well as for the proportional thresholds to use for low, moderate and high categories were trialled.
+
+## Comparison of Habitat quality assessments
+
+The presence of a high quality habitat is assessed with the BSBI heat maps through benchmarking the number of positive habitat indicator species found present within each monad. As indicator numbers vary regionally across England, we looked to find the best way to benchmark high, medium and low categories accounting for this variation. For this we looked at three different methods where benchmarks would be set according to:
+
+* a proportion of the total indicators present within a region
+* a proportion of the total indicators present within a myriad (100 x 100 km grid cells)
+* a proportion of the total indicators present within a moving neighbourhood of surrounding monads
+
+We also looked at parameters within these and different proportional thresholds to categorise the three value classes.
+
+See technical report (Trippier et al. 2022) for write up of the analysis results.
+
+```{r readHeatmap, eval=F}
+#list layers in 1km botanical heatmap geodatabase
+st_layers(paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'))
+
+# read in heatmap monad data
+mainTable <- st_read(dsn=paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),layer='BotanicalIndicators_England_1km')
+all_species <- st_read(dsn=paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),layer='BotanicalIndicators_England_species_1km')
+species_hab <- st_read(dsn=paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),layer='broadHabitat_associated_species')
+
+```
+
+### 1. Analysis of regional indicator benchmarking
+
+```{r regionalProps, eval=F}
+#load in data layers
+all_monads <- mainTable
+# find all habitats
+habs <- names(all_monads)[8:17]
+#match column headers
+names(species_hab)[4:13]<- names(all_monads)[8:17]
+
+#find all regions
+region_cat <- unique(all_monads$region)
+
+#iterate through habitats for regional assessment
+all_hab_summary <- NULL
+for (i in habs){
+  print(i)
+  hab_monad <- all_monads %>% select(monad, region, total_no=!!i) %>%
+    mutate(total_no = ifelse(total_no==-9999, NA, total_no))
+  #join all species with species hab lookup
+  hab_species <- all_species %>% left_join(species_hab[,c('species',i)], by='species')  %>% filter(get(i) == 1) %>%  select(monad, species, lastRecorded)
+  hab_all <- inner_join(hab_monad,hab_species,by='monad') 
+  #unique species
+  total_species <- hab_all %>% st_drop_geometry() %>% select(region,total_no,species)
+  #iterate through regions to calculate total, 10% and 20%
+  all_regions <- purrr::map_df(region_cat,.f=function(cat){
+    hab_region <- hab_monad %>% filter(region==cat) 
+    #total number indicators present in a region
+    Tot_indicators <- total_species %>% filter(region==cat) %>% 
+    dplyr::select(species) %>% unique() %>% nrow()
+    #10% indicators present = moderate, 20% =good
+    pcnt_5 <- round(0.05*Tot_indicators)
+    pcnt_10 <- round(0.1*Tot_indicators)
+    pcnt_20 <- round(0.2*Tot_indicators)
+    quantile(Tot_indicators)
+    hab_region <- hab_region %>% mutate(Tot_indicators=Tot_indicators,
+                                        pcnt5 = round(0.05*Tot_indicators), 
+                                        pcnt10= round(0.1*Tot_indicators),
+                                        pcnt15= round(0.15*Tot_indicators),
+                                        pcnt20= round(0.2*Tot_indicators),
+                                        pcnt25= round(0.25*Tot_indicators),
+                                        pcnt30= round(0.3*Tot_indicators),
+                                        pcnt35= round(0.35*Tot_indicators),
+                                        pcnt40= round(0.4*Tot_indicators),
+                                        pcnt45= round(0.45*Tot_indicators),
+                                        pcnt50= round(0.5*Tot_indicators)
+                                       )
+    hab_region
+  })
+  # regional differences in thresholds
+  #histogram
+  p <- ggplot(data = all_regions, aes(x = total_no)) + geom_histogram() 
+  p + facet_wrap(~region, scales = "free_y") + xlab("Number of indicator species") + ylab("Recorder frequency")
+  ggsave(paste0('IndicatorBaselines/Regional/',i,'_regionalhistograms.png')) 
+  
+  #regional differences in percentiles
+  region_summ <- all_regions %>% st_drop_geometry() %>% 
+    select(region, Tot_indicators:pcnt50) %>% unique() 
+  region_graph <- region_summ %>% gather(key = "proportion", value = "value",Tot_indicators:pcnt50)
+  region_graph$proportion <- factor(region_graph$proportion,
+                        levels=c("Tot_indicators","pcnt50","pcnt45","pcnt40","pcnt35","pcnt30","pcnt25","pcnt20","pcnt15","pcnt10","pcnt5",ordered=TRUE))
+  
+  
+  #proportions plot
+  region_graph <- region_graph %>% filter(proportion=="pcnt5"|proportion=="pcnt10"|proportion=="pcnt20"|proportion=="pcnt30"|proportion=="Tot_indicators")
+  propPlot <- ggplot(region_graph, aes(x = region, y = value, fill = proportion)) +
+    geom_bar(position="dodge", stat="identity", show.legend = T) +
+    scale_x_discrete(guide = guide_axis(angle = 90),labels = function(x) str_wrap(x, width = 10)) +
+    scale_discrete_manual(aesthetics = 'fill', values = viridis(12), name="Proportion of indicators",labels=c("100%","30%", "20%","10%","5%")) + 
+    xlab("Region") + ylab("Number of indicator species") + ggtitle(i) +
+    theme(legend.position="top")
+  #summary table
+  summ_tab<- region_summ %>% dplyr::select(region,p0.05=pcnt5,p0.1=pcnt10,p0.15=pcnt15, p0.2=pcnt20,p0.25=pcnt25,p0.3=pcnt30,p0.35=pcnt35,p0.4=pcnt40,p0.45=pcnt45,p0.5=pcnt50,p1=Tot_indicators) 
+  ggsumtab <- summ_tab %>% ggtexttable(rows = NULL,theme = ttheme("mOrange",base_size = 9))
+  #grid table and graph
+  multi <- ggarrange(propPlot, ggsumtab,
+                     ncol = 1, nrow = 2,
+                     widths= c(0.1,0.8,0.1),
+                     heights = c(2, 1)) +
+    theme(plot.margin = margin(1,1,1,1, "cm"))
+  ggsave <- ggplot2::ggsave; body(ggsave) <- body(ggplot2::ggsave)[-2]
+  ggsave(paste0('IndicatorBaselines/Regional/Proportions/',i,'_summary.pdf'))
+  #add to end table
+  summ_tab<- summ_tab %>% mutate(habitat=i)
+  all_hab_summary <- rbind(all_hab_summary,summ_tab)
+}
+
+write.csv(all_hab_summary,'IndicatorBaselines/Regional/all_hab_summary.csv')
+```
+
+```{r regionalClassifying, eval=F}
+#classifying habitats into traffic light categories
+all_hab_summary <-read.csv('IndicatorBaselines/Regional/all_hab_summary.csv')
+
+# iterate through testing different regional percentage benchmarks for the categorised layers
+tests <- tribble(  ~test, ~cat,~max,
+                   1,'low', 0.1,
+                   1,'moderate', 0.25,
+                   1,'high', 1,
+                   2,'low', 0.1,
+                   2,'moderate', 0.2,
+                   2,'high', 1,
+                   3,'low', 0.05,
+                   3,'moderate', 0.1,
+                   3,'high', 1,
+                   4,'low', 0.1,
+                   4,'moderate', 0.3,
+                   4,'high', 1,
+                   )
+for (i in unique(tests$test)){
+  print(i)
+  test_select <- tests %>% filter(test==i)
+  outfold_test <- paste0('IndicatorBaselines/Regional/CategorisedVectors/BotanicalVal_',i,'_perc_',test_select$max[1], '_',test_select$max[2])
+  dir.create(outfold_test)
+  for (j in habs){
+  classifyHabs(habType = j, levels = test_select[,c('cat','max')], outfolder=paste0(outfold_test,'/'))
+  }
+}
+
+```
+
+```{r regionMapAnalysis,  eval = F}
+#extract results for each test
+tests <- basename(list.dirs('IndicatorBaselines/Regional/CategorisedVectors/', recursive = F))
+
+for(i in 1:length(tests)){
+  testname <- tests[i]
+  files <- list.files(paste0('IndicatorBaselines/Regional/CategorisedVectors/',testname,'/'),  pattern='shp',full.names = T)
+  all_out <- purrr::map_df(files,.f=function(file){
+    map_out <-st_read(file,quiet=T)
+    #count monads in each category
+    map_out %>% st_drop_geometry() %>% group_by(valueCat) %>% summarise(count = n())
+    #by region
+    result <- map_out %>% st_drop_geometry()  %>% 
+      group_by(valueCat,region) %>% summarise(count = n()) %>% 
+      mutate(habitat=str_remove(basename(file),'_regional.shp'))
+    result
+  })
+  #as factor
+  all_out$valueCat[is.na(all_out$valueCat)]<-'Further Survey Required'
+  all_out$valueCat <- factor(all_out$valueCat,
+                             levels=c("high","moderate","low",'Further Survey Required',ordered=TRUE))
+  #summary across all regions
+  by_hab <- all_out %>% group_by(habitat,valueCat) %>% summarise(count = sum(count)) %>%
+    pivot_wider(names_from=valueCat,values_from=count)
+  
+  #plot in 2 pages
+  all_out1<- all_out %>% filter(habitat %in% unique(all_out$habitat)[1:6])
+  all_out2<- all_out %>% filter(habitat %in% unique(all_out$habitat)[7:10])
+  allhabs <- list(all_out1,all_out2)
+  pal <- c('#fde725','#5ec962','#21918c','#DCDCDC')
+  #proportions plot
+  for(i in 1:2){
+    habset <- allhabs[[i]]
+    if(i==1){
+      labs <- c('arable','boundary','coastal','fen, marsh, swamp','freshwater','grassland')
+      names(labs) <- c('arable','boundry','coastal','fnMrshS','frshwtr','grsslnd')
+    }else{
+      labs <- c('heath & bog','inland rock','montane','woodland')
+      names(labs) <- c('heathBg','inlndRc','montane','woodlnd')
+    }
+    ggplot(habset, aes(x = region, y = count, fill = valueCat)) +
+      geom_bar(position="fill", stat="identity", show.legend = T) +
+      scale_x_discrete(guide = guide_axis(angle = 90),labels = function(x) str_wrap(x, width = 10)) +
+      scale_discrete_manual(aesthetics = 'fill', values = pal, name="Botanical value",labels=c("High","Moderate", "Low",'Further survey required')) + 
+      xlab("Region") + ylab("Proportion of regional monads") + theme_bw() + theme(legend.position="bottom") +  
+      facet_wrap(~ habitat, ncol=2, labeller = labeller(habitat = labs))
+    ggsave(paste0('IndicatorBaselines/Regional/CategorisedVectors/',testname,'_habset',i,'.png'))
+  }
+}
+
+```
+
+### 2. Analysis of myriad indicator benchmarking
+
+```{r myriadanalysis, eval = F}
+#read in OS grids
+Ind_monads <- mainTable
+myriads <- st_read('DataLayers/OS BNG grids/OS_BNG_grids_100km_grid.shp') %>% select(tile_name)
+
+#join to myriads
+monadmyriads <- Ind_monads  %>% st_centroid() %>% st_intersection(myriads) %>%  st_drop_geometry() %>% select(monad, myriads=tile_name)
+Ind_monad_myriad <- Ind_monads %>% left_join(monadmyriads, by="monad")
+
+# find all habitats
+habs <- names(Ind_monad_myriad)[8:17]
+#match column headers
+names(species_hab)[4:13]<- names(Ind_monad_myriad)[8:17]
+
+#iterate through trials of different thresholds
+tests <- tribble(  ~test, ~cat,~max,
+                   1,'low', 0.1,
+                   1,'moderate', 0.2,
+                   1,'high', 1,
+                   2,'low', 0.05,
+                   2,'moderate', 0.1,
+                   2,'high', 1
+                   )
+for (i in unique(tests$test)){
+  print(i)
+  test_select <- tests %>% filter(test==i)
+  outfold_test <- paste0('IndicatorBaselines/Tetrad/BotanicalVal_',i,'_perc_',test_select$max[1], '_',test_select$max[2])
+  dir.create(outfold_test)
+  for (j in habs){
+  classifyTetHabs(shapefile= Ind_monad_myriad, habType = j, levels = test_select[,c('cat','max')], outfolder=paste0(outfold_test,'/'))
+  }
+}
+
+
+```
+
+```{r myriadMapAnalysis, eval = F }
+#extract results
+testname <- 'BotanicalVal_1_perc_0.1_0.2'
+
+files <- list.files(paste0('IndicatorBaselines/MovingWindow/',testname,'/'),  pattern='shp',full.names = T)
+map <- st_read(files) %>% st_drop_geometry()
+map  %>% group_by(valueCat) %>% summarise(count = n())
+
+```
+
+### Analysis of  indicator thresholds within a moving window of neighbouring hectads
+
+* note this requires a lot of processing power! may take a while to run
+
+```{r movingWindow, eval = F}
+#read in OS grids
+Ind_monads <- mainTable
+#match column headers
+names(species_hab)[4:13]<- names(Ind_monads)[8:17]
+
+#distance function - 10000 = 1 hectad, 5000 = centroid to edge
+neighbour_dist<-function(x,unit=1000){x*unit - (unit/2)}
+
+# load habitat names
+habs <- names(Ind_monads)[8:17]
+habType ='frshwtr' # or set to singular
+
+# trial different regional percentage benchmarks for the categorised layers - distances 50 and 25
+tests <- tribble(  ~test, ~cat,~max,
+                   1,'low', 0.1,
+                   1,'moderate', 0.2,
+                   1,'high', 1,
+                   2,'low', 0.1,
+                   2,'moderate', 0.2,
+                   2,'high', 1,
+                   )
+for (i in unique(tests$test)){
+  print(i)
+  test_select <- tests %>% filter(test==i)
+  outfold_test<- paste0('IndicatorBaselines/MovingWindow/BotanicalVal_',i,'_perc_',test_select$max[1], '_',test_select$max[2])
+  dir.create(outfold_test)
+  for (j in habs[1:2]){
+  classifyMovingWindow(habType = j, levels = test_select[,c('cat','max')], outfolder=paste0(outfold_test,'/'))
+    print(paste(j, ' done.')) 
+  }
+}
+
+```
+
+```{r movingwindowAnalysis, eval = F}
+#extract results
+testname <- 'MovingWindow_50km_perc_0.1_0.2'
+
+files <- list.files(paste0('IndicatorBaselines/Tetrad/',testname,'/'),  pattern='shp',full.names = T)
+
+all_out <- purrr::map_df(files,.f=function(file){
+  map_out <-st_read(file,quiet=T)
+  #count monads in each category
+  map_out %>% st_drop_geometry() %>% group_by(valueCat) %>% summarise(count = n())
+  #by region
+  result <- map_out %>% st_drop_geometry()  %>% 
+    group_by(valueCat,tetrad) %>% summarise(count = n()) %>% 
+    mutate(habitat=str_remove(basename(file),'_regional.shp'))
+result
+})
+
+#as factor
+all_out$valueCat[is.na(all_out$valueCat)]<-'Further Survey Required'
+all_out$valueCat <- factor(all_out$valueCat,
+                        levels=c("high","moderate","low",'Further Survey Required',ordered=TRUE))
+#summary across all regions
+by_hab <- all_out %>% group_by(habitat,valueCat) %>% summarise(count = sum(count)) %>%
+  pivot_wider(names_from=valueCat,values_from=count)
+
+  #proportions plot
+  labs <- c('arable','boundary','coastal','fen, marsh, swamp','freshwater','grassland','heath & bog','inland rock','montane','woodland')
+  names(labs) <- c('arable','boundry','coastal','fnMrshS','frshwtr','grsslnd','heathBg','inlndRc','montane','woodlnd')
+pal=rev(brewer.pal(4,'Greys')) 
+ ggplot(all_out, aes(x = habitat, y = count, fill = valueCat)) +
+    geom_bar(position="fill", stat="identity", show.legend = T) +
+    scale_x_discrete(labels = str_wrap(labs, width = 10)) +
+    scale_discrete_manual(aesthetics = 'fill', values = pal, name="Botanical value",labels=c("High","Moderate", "Low",'Further survey required')) + 
+    xlab("") + ylab("Proportion of monads") + theme_bw() + theme(legend.position="bottom")
+ ggsave(paste0('IndicatorBaselines/Tetrad/',testname,'.png'), width = 8, height=4)
+
+```
+
+## Combining the steps into a the botanical value layer
+
+The resulting values from the first and second steps were then combined to take the greatest value level assigned to a monad, therefore representing a precautionary approach to preserve those sites which are potentially of high botanical value.
+
+```{r botanicalValue, eval = F }
+
+#locations for regional method layers
+methods <- list(regions='IndicatorBaselines/Regional/CategorisedVectors/BotanicalVal_2_perc_0.1_0.2_v2/',
+                tetrad='IndicatorBaselines/Tetrad/BotanicalVal_1_perc_0.1_0.2/')
+
+#iterate producing final layers for the different methods
+for (i in methods){
+  files <-list.files(unlist(i), pattern='.shp')
+  priority <- mainTable %>% select(monad, ttPrrty) %>% mutate(priorityCat = ifelse(ttPrrty==-9999,'NA',
+                                                                              ifelse(ttPrrty>=1,'high','NA'))) %>% select(-ttPrrty)
+for (j in files){
+  layer <- st_read(paste0(unlist(i),j),quiet=T)
+  hab <- str_replace(j,'_regional.shp','')
+  layer <- layer %>% st_drop_geometry() %>% select(monad,{{hab}}:=valueCat)
+  priority <- priority %>% left_join(layer, by='monad')
+  print(paste(str_replace(j,'_regional.shp',''), 'done.'))
+}
+
+  #start with priority and update with highest rank - for loop gets stuck here but runs manually
+  valueTable <- priority %>% replace(is.na(.),'further survey required')
+valueTable <- valueTable %>% 
+  dplyr::mutate(valueCat = ifelse(priorityCat=='high'|arable=='high' |boundry =='high' |coastal =='high' |fnMrshS=='high' |frshwtr=='high'|grsslnd=='high' | heathBg=='high' |inlndRc =='high' |montane =='high' |woodlnd =='high','high',
+                           ifelse(arable=='moderate' |boundry =='moderate' |coastal =='moderate' |fnMrshS=='moderate' |frshwtr=='moderate'|grsslnd=='moderate' | heathBg=='moderate' |inlndRc =='moderate' |montane =='moderate' |woodlnd =='moderate','moderate',
+                                  ifelse(arable=='low' |boundry =='low' |coastal =='low' |fnMrshS=='low' |frshwtr=='low'|grsslnd=='low' | heathBg=='low' |inlndRc =='low' |montane =='low' |woodlnd =='low','low', 'further survey required'))))
+
+#save layer
+st_write(valueTable,paste0('IndicatorBaselines/botanicalValue_',names(i),'_England_1km.shp'), delete_layer = T)
+
+
+##plot ##
+plotTable <- valueTable %>% mutate(valueCat =  factor(valueCat,levels=c('further survey required',"low","moderate","high"))) 
+pal <- c('#DCDCDC','#bae4b3','#74c476','#238b45')
+
+map1 <- tm_shape(plotTable) + tm_fill(col='valueCat', palette = pal, reverse=T,title = str_wrap(paste0('Botanical value'),width=10)) + tm_scale_bar(position=c("left", "bottom"))
+tmap_save(map1, paste0('IndicatorBaselines/botanicalValue_',names(i),'_England_1km.png'))  
+
+#just habitat quality metrics
+habValueTable <- valueTable %>% 
+  dplyr::mutate(habQual = ifelse(arable=='high' |boundry =='high' |coastal =='high' |fnMrshS=='high' |frshwtr=='high'|grsslnd=='high' | heathBg=='high' |inlndRc =='high' |montane =='high' |woodlnd =='high','high',
+                                  ifelse(arable=='moderate' |boundry =='moderate' |coastal =='moderate' |fnMrshS=='moderate' |frshwtr=='moderate'|grsslnd=='moderate' | heathBg=='moderate' |inlndRc =='moderate' |montane =='moderate' |woodlnd =='moderate','moderate',
+                                         ifelse(arable=='low' |boundry =='low' |coastal =='low' |fnMrshS=='low' |frshwtr=='low'|grsslnd=='low' | heathBg=='low' |inlndRc =='low' |montane =='low' |woodlnd =='low','low', 'further survey required'))))
+
+##plot ##                                                  
+plotTable <- habValueTable %>% mutate(habQual =  factor(habQual,levels=c('further survey required',"low","moderate","high"))) 
+pal <- c('#DCDCDC','#bae4b3','#74c476','#238b45')
+
+map2 <- tm_shape(plotTable) + tm_fill(col='habQual', palette = pal, reverse=T,title = str_wrap(paste0('Botanical value'),width=10)) + tm_scale_bar(position=c("left", "bottom"))
+tmap_save(map2, paste0('IndicatorBaselines/habitatQuality_',names(i),'_England_1km.png'))  
+}
+
+```
+
+Analysis of output botanical value map classified monads.
+
+```{r BVAnalysis, eval = F }
+#extract results from each analysis
+files <- list.files(paste0('IndicatorBaselines/'),  pattern='shp',full.names = T)
+
+all_out <- purrr::map_df(files,.f=function(file){
+  map_out <-st_read(file,quiet=T)
+  
+  #count monads in each category
+  results <- map_out %>% 
+    st_drop_geometry() %>% 
+    group_by(valueCt) %>% 
+    summarise(count = n())
+  
+  total <- sum(results$count)
+  results <- results %>% 
+    mutate(prop = round((count/total)*100,2)) %>%
+    mutate(test = unlist(str_split(basename(file),'_'))[2])
+  results
+
+})
+
+##just moving window calculate area
+mw_map <- st_read(files[1])
+england <- st_read('DataLayers/Countries_(December_2020)_UK_BFC/England_boundary.shp')
+#clip to england coastline
+mw_coast <- st_intersection(mw_map, england)
+st_write('IndicatorBaselines/MovingWindow/mw_England_botanicalValue_clipped.shp')
+
+#merge
+library(units)
+
+mw_coast <-st_read('IndicatorBaselines/MovingWindow/mw_England_botanicalValue_clipped.shp')
+
+mw_area <- mw_coast %>% select(monad,valueCt) %>%
+  mutate(area_m=st_area(geometry)) %>%
+  st_drop_geometry() %>%
+  mutate(area_km= set_units(area_m, km^2)) %>%
+  group_by(valueCt) %>% 
+  summarise(totArea_km = sum(area_km))
+
+
+#sense check - area england 130,279 km²
+sum(mw_area$totArea_km)
+```

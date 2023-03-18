@@ -1,0 +1,525 @@
+---
+title: "Botanical Heatmap Workflow"
+author: "Natural England"
+date: "06/04/2021"
+output:
+  html_document:
+    includes:
+      before_body: 'D:/Github/BotanicalHeatmaps/images/header.html'
+always_allow_html: yes
+---
+
+```{r setup, include=F}
+
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+
+#load packages
+require(tidyverse)
+require(dplyr)
+require(sf)
+require(readr)
+require(tmap)
+
+
+```
+
+## Project Background
+
+Under the Natural Capital and Ecosystem Assessment (NCEA), Natural England have been working in partnership with the Botanical Society of Britain and Ireland (BSBI) to further develop their botanical heatmaps derived from plant occurrence records supplied from BSBI’s central plant distribution database (BSBI, 2022). The project aims to create easily interpretable spatial layers that will be available for operational use in advising tree planting schemes.  
+
+This repeatable workflow will output three heatmap data products,  compiled within geopackages. These will have the following attributes:
+
+*Ancient Woodland Indicator (AWI) Botanical Heatmap 2021*
+
+Ancient Woodland Indicators heatmap geodatabase containing summarised counts of the number of ancient woodland indicators recorded per monad (1 x 1 km grid cells). Geopackage contains the count, species list, and when each species was last recorded within each monad. This will take into account survey effort by assigning the value -9999 where monads have been assessed to have poor survey effort below a minimal recording day threshold, and are highlighted as having poor survey coverage.
+
+*Botanical heatmaps 1km 2021*
+
+Summarised counts of the number of Rare, Scarce or Threatened (RST) plant species and Positive Habitat Priority Indicators (PHPI) species, with the PHPIs split out by broad habitat type, recorded per monad (1 x 1 km grid cells). Geopackage contains the count, species list and when the species were last recorded in each monad.
+
+*RST plant species heatmap 100m 2021*
+
+summarised count of the number of Rare, Scarce or Threatened (RST) plant species per hectare (100 x 100 m grid cells). Geopackage contains the count, species list and when the species w3ere last recorded in each monad
+
+## Data Sources
+
+The data source for the botanical heat maps were vascular plant species occurrence records held in the BSBI’s central plant distribution database (BSBI, 2022). 
+
+As well as data from the BSBI, supporting data were obtained from other sources for the spatial analysis. The Ordnance Survey (2021) British National Grids were used as a spatial framework for the grid cell divisions of 100 x 100 m (hectares), 1 x 1 km (monads) and 100 x 100 km (myriads). For regional and country boundaries, spatial data were obtained from the Office for National Statistics (2020) Open Geography Portal. These data were all available under an Open Government Licence.
+
+```{r dataLayers}
+datFolder <- ('Y:/BotanicalHeatmaps/DataLayers/')
+#BSBI shapefiles and csv files
+#OS grid and admin areas
+OS_1km <- sf::st_read(paste0(datFolder,'OS BNG grids/OS_BNG_grids_1km_grid.shp'))
+OS_10km <- sf::st_read(paste0(datFolder,'OS BNG grids/OS_BNG_grids_10km_grid.shp'))
+countries <- sf::st_read(paste0(datFolder,'Countries_(December_2020)_UK_BFC/Countries_(December_2020)_UK_BFC.shp'))
+regions <- sf::st_read(paste0(datFolder,'Regions_(December_2020)_EN_BFC/Regions_(December_2020)_EN_BFC.shp')) %>% dplyr::select(RGN20NM)
+```
+
+## Method
+
+### 1. Clip OS grid to England and add in regional data (do not need to rerun)
+
+```{r GB&EnglandTemplate, eval=F}
+
+# Create England template with OS 1km grid
+## subset countries to England
+England <- countries %>% dplyr::filter(CTRY20NM == 'England') %>% st_make_valid()
+## crop OS 1km grid
+Eng_OS_1km <- OS_1km %>% st_crop(England) %>% st_intersection(England)
+## save out template
+st_write(Eng_OS_1km, paste0(datFolder,'OS BNG grids/Eng_OS_1km.shp'))
+
+# Add in the regions
+## load template
+Eng_OS_1km  <- sf::st_read(paste0(datFolder,'OS BNG grids/Eng_OS_1km.shp')) %>%
+  select(monad=tile_name)
+## find region the monad sits in
+monad_region <- Eng_OS_1km  %>% st_centroid() %>% st_intersection(regions) %>%
+  st_drop_geometry()
+Eng_OS_region <-Eng_OS_1km %>% left_join(monad_region, by='monad')
+st_write(Eng_OS_region, paste0(datFolder,'OS BNG grids/Eng_OS_region.shp'))
+## where no region found e.g. coast, find the nearest region
+Eng_monad_region <- Eng_OS_region %>% filter(!is.na(Eng_OS_region$RGN20NM))
+Eng_no_region <- Eng_OS_region %>% filter(is.na(Eng_OS_region$RGN20NM))
+## find nearest region
+regions <- regions %>% mutate(id = row_number()) %>% st_drop_geometry()
+newRegion <- Eng_no_region %>% st_nearest_feature(regions) %>% tibble() %>%
+  left_join(regions,by=c('.'='id'))
+modNoRegion <- Eng_no_region  %>% cbind(newRegion) %>% select(monad,RGN20NM=RGN20NM.1) 
+## join the updated data back in
+all_Eng_monad_region <- rbind(Eng_monad_region,modNoRegion)
+## write out england monad template with regions
+st_write(all_Eng_monad_region, paste0(datFolder,'DerivedLayers/Eng_OS_monad_region.shp'))
+
+```
+
+
+### 2. Set file paths (ensure to update when conducting update of the layers)
+
+```{r filepathsToSet_2122, eval=T}
+#2021-22
+
+## filepath for recording days per monad ## 
+rDays <- st_read(paste0(datFolder,'BSBI_data/2021-2022/heatmap_reports_GB_20211129/heatmap_recording_effort_report_2021_11_29.shapefiles/results/recordingdays1000_VC1-VC112.shp')) %>% st_drop_geometry()
+
+## AWI filepaths ##
+AWI_count <- readr::read_csv(paste0(datFolder,'BSBI_data/2021-2022/heatmap_reports_GB_2021_11/Indicators by Broad Habitat/Ancient_wood_indicator_species_count1000_VC1-VC112.csv'),show_col_types = FALSE)
+AWI_species <- readr::read_csv(paste0(datFolder,'BSBI_data/2021-2022/heatmap_reports_GB_2021_11/Indicators by Broad Habitat/Ancient_wood_indicator_species_species1000_VC1-VC112.csv'),show_col_types = FALSE)
+
+## 1km monad filepaths ##
+priority <- readr::read_csv(paste0(datFolder,'BSBI_data/2021-2022/heatmap_reports_GB_2021_11/Priority Indicators/conservationStatus_species1000_VC1-VC112.csv'),show_col_types = FALSE)
+
+combined_count <- st_read(paste0(datFolder,'BSBI_data/2021-2022/heatmap_combined_indicators_monad_report_to2021-11-29_2022_03_15.shapefiles/results/combined-indicator-counts_VC1-VC112.shp')) %>% st_drop_geometry()
+
+combined_species <-st_read(paste0(datFolder,'BSBI_data/2021-2022/heatmap_combined_indicators_monad_report_to2021-11-29_2022_03_15.shapefiles/results/combined-indicators_VC1-VC112.shp')) %>% st_drop_geometry() 
+
+## 100m priority species filepaths ##
+priority_100 <-  st_read(paste0(datFolder,'BSBI_data/2021-2022/heatmap_reports_GB_20211129/heatmap_conservation_status_100m_report_2021_11_26.shapefiles/results/conservationStatus_species100_VC1-VC112.shp'))
+
+# Folder path to save outputs
+outputFolder <- 'Y:/BotanicalHeatmaps/Analysis/2021-22/Products Final2/Data/'
+
+#survey coverage threshold - update if changed after the below analysis
+surveyCov <- 3
+year <- '2021'
+
+```
+
+```{r filepathsToSet_2223, eval=T}
+#2022-23
+
+## filepath for recording days per monad ## 
+rDays <- st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_recording_days_2023_01_31.shapefiles/results/recordingdays1000_VC1-VC112.shp')) %>% st_drop_geometry()
+
+## AWI filepaths ##
+AWI_count <- st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_species_counts_and_indicators_report_2023_01_26c.shapefiles/results/Ancient_wood_indicator_species_count1000_VC1-VC112.shp')) %>% st_drop_geometry()
+AWI_species <- st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_species_counts_and_indicators_report_2023_01_26c.shapefiles/results/Ancient_wood_indicator_species_species1000_VC1-VC112.shp')) %>% st_drop_geometry()
+
+## 1km monad filepaths ##
+priority <- st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_species_counts_and_indicators_report_2023_01_26c.shapefiles/results/conservationStatus_species1000_VC1-VC112.shp')) %>% st_drop_geometry()
+
+combined_count <- st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_species_counts_and_indicators_report_2023_01_26c.shapefiles/results/combined-indicator-counts_VC1-VC112.shp')) %>% st_drop_geometry()
+
+combined_species <-st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_monad_species_counts_and_indicators_report_2023_01_26c.shapefiles/results/combined-indicators_VC1-VC112.shp')) %>% st_drop_geometry() 
+
+## 100m priority species filepaths ##
+priority_100 <-  st_read(paste0(datFolder,'BSBI_data/2022-2023/20230130_BSBIUpdateData/heatmap_100m_report_2023_01_26.shapefiles/results/conservationStatus_species100_VC1-VC112.shp'))
+
+# Folder path to save outputs
+outputFolder <- 'Y:/BotanicalHeatmaps/Analysis/2022-23/Outputs/'
+
+#survey coverage threshold - update if changed after the below analysis
+surveyCov <- 3
+year <- '2022'
+
+```
+
+### 3. Compile survey effort for monads and determine a baseline for good survey coverage
+
+* analysis of a baseline level of a monad having good survey coverage was carried out with the script 'survey_effort_analysis.Rmd'. This compared the number of recording days against the total number of taxa recorded at a site (all taxa not just indicator species). Through comparisons with linear regression modelling, this demonstrated that on average after 3 recording days, over 200 taxa were recorded within a monad, which was observed across the difference regions. Discussions with experts at BSBI confirmed that this would provide an indication of a site having been well recorded and therefore 3 recording days were selected as a baseline measure for good coverage.
+
+```{r surveydays, eval=F}
+# join recording days per monad
+## load in monad template
+all_Eng_monad_region <- st_read(paste0(datFolder,'DerivedLayers/Eng_OS_monad_region.shp')) %>%
+  rename(region=RGN20NM)
+
+## load recording days per monad
+surveyMonad <- rDays %>%
+   filter(!region_nam %in% c("Scottish highlands and islands","Scottish lowlands","Scottish highlands and islands,Scottish lowlands","Wales" )) %>% select(-region_nam) 
+names(surveyMonad) <- c('monad','RDays_40')
+## join days to template
+Eng_surveyEffort <- all_Eng_monad_region  %>% left_join(surveyMonad, by='monad')  %>%
+  mutate(RDays_40=replace_na(RDays_40,0))
+
+# Analyse survey coverage
+summary(Eng_surveyEffort$RDays_40)
+
+# see survey_effort_analysis.Rmd for full analysis
+
+#baseline of recording days showing good coverage
+surveyCov = 3
+
+#write out layer with survey coverage data
+st_write(Eng_surveyEffort,paste0(outputFolder,'Eng_OS_monad_surveyEffort_',year,'.shp'))
+```
+
+```{r surveyPlot, eval=T}
+#read in the survey data
+surveyShape = sf::st_read(paste0(outputFolder,'Eng_OS_monad_surveyEffort.shp'))
+#categorise into good or poor coverage
+hab_monad <- surveyShape %>% mutate(valueCat = ifelse(RDays_40<=2, 'Poor survey coverage',
+                                                'Good survey coverage')) %>% 
+  mutate(valueCat =  factor(valueCat,levels=c("Poor survey coverage","Good survey coverage"))) 
+
+#summary count of monads in each category
+  results <- hab_monad %>% 
+    st_drop_geometry() %>% # removes geometry field
+    group_by(valueCat) %>%  # grouping data by the value category ( poor, good)
+    summarise(count = n()) #count per category
+  
+  total <- sum(results$count)
+  results <- results %>% 
+    mutate(prop = round((count/total)*100,2))
+  
+#plot on a map
+pal <- c('#440154','#21918c')
+map1 <- tm_shape(hab_monad) + 
+  tm_fill(col='valueCat', style='cat',palette = pal, reverse=T,title = 'BSBI 1km Survey coverage') + 
+  tm_scale_bar(position=c("right", "bottom")) 
+tmap_save(map1, paste0(outputFolder,'/surveyCoverMap.png'))  
+ map1 
+```
+
+```{r surveycounties, eval=T}
+#function for retrieving county summary data
+  surveyCovSumm <- function(county,
+                          countiesShape = psate0(datFolder,'Counties_and_Unitary_Authorities_(December_2020)_UK_BUC/Counties_and_Unitary_Authorities_(December_2020)_UK_BUC.shp'), 
+                          surveyShape = paste0(outputFolder,'Eng_OS_monad_surveyEffort.shp')){
+  #load and filter to county
+  counties <- st_read(countiesShape,quiet=T)
+  selectCount <- counties %>% filter(CTYUA20NM ==county)
+  if(nrow(selectCount)<1){stop('county name not found.')}
+  #load in survey effort layer
+  surveyCov <- st_read(surveyShape,quiet=T)
+  ## find county monads
+  monad_county <- surveyCov %>% suppressMessages(st_centroid()) %>%
+    st_intersection(selectCount) %>%
+    st_drop_geometry() %>% select(monad, RDays_40)
+  cat('\n')
+  summary(monad_county$RDays_40)
+}
+
+#comparison of Cornwall and Devon
+surveyCovSumm(county='Cornwall')
+surveyCovSumm(county='Devon')
+
+```
+
+
+### 4. Create Ancient Woodland Inventory layers for geodatabase
+*BotanicalHeatMaps_AWI_1970_2021*
+ 
+* This layer is aimed specifically at supporting updates to the Ancient Woodland Inventory, plotting just the plant indicators for ancient woodland and allowing users to view the total number of indicators per monad, the species present and the date they were last recorded.
+* An assumption is made that where there are no AWI records for a monad but good survey coverage (above baseline recorder days), then there are no AWIs present. However, where the number of AWIs for a monad is 0, but a monad has not had good survey coverage (below baseline recorder days) then the record has been updated to NA, representing a need for further survey.
+* for writing out for use with Arc software, the NA (no data) records have been given the value -9999.  
+### check data headers ###
+```{r AWIdb, eval=T}
+# join count data to monad template
+## load AWI count data
+AWI_count <- AWI_count %>% dplyr::select(monad,totAWI='total_freq')
+
+## join to monad template
+Eng_surveyEffort <-st_read(paste0(outputFolder,'Eng_OS_monad_surveyEffort_',year,'.shp'))
+AWI_poly <- Eng_surveyEffort %>% 
+  select(monad,RDays_40,region) %>% #change order of fields
+  left_join(AWI_count, by='monad') #join in the count data
+
+surveyCov=3
+
+# fill in NAs with 0 where survey effort is good coverage - above threshold days
+
+## number of  monads with no AWI species present
+nrow(AWI_poly[is.na(AWI_poly$totAWI),])
+
+## update to 0 where survey day threshold exceeded, else NA value (-9999)
+AWI_poly <- AWI_poly %>% 
+  mutate(totAWI= ifelse(is.na(totAWI) & RDays_40>=surveyCov, 0,
+                        ifelse(is.na(totAWI) & RDays_40 < surveyCov, -9999,totAWI)))
+
+#number good survey cover, no indicators recorded
+nrow(AWI_poly[AWI_poly$totAWI==0,])
+#number poor survey cover, no indicators recorded
+nrow(AWI_poly[AWI_poly$totAWI==-9999,])
+
+# where survey coverage is < recording day threshold and totalAWI =0, replace with NA to indicate further survey needed
+
+## update to NA where poor coverage
+AWI_poly <- AWI_poly %>% 
+  mutate(totAWI= ifelse(RDays_40 < surveyCov & totAWI ==0, -9999,totAWI))
+
+#number good survey cover, no indicators recorded
+nrow(AWI_poly[AWI_poly$totAWI==0,])
+#number poor survey cover, no indicators recorded
+nrow(AWI_poly[AWI_poly$totAWI==-9999,])
+
+#add field for survey coverage
+AWI_poly <- AWI_poly %>% mutate(surveyCoverage = ifelse(RDays_40<surveyCov,"poor survey coverage", "good survey coverage")) %>% 
+  select(monad,region,RDays_40,surveyCov=surveyCoverage,totAWI,geometry)
+# write out to geopackage
+st_write(AWI_poly,
+         paste0(outputFolder,'AWI_England_1km_',year,'.gpkg'),
+         layer = 'AWI_poly',driver='GPKG')
+
+# create species table 
+## read in species data per monad
+AWI_species <- AWI_species %>%
+  filter(latest_dat!=0) %>% #get rid of any without a valid date
+  select(monad,species=group,commonName=vernacular,lastRecorded=latest_dat) %>% #rename fields
+  mutate(commonName = ifelse(commonName=="",NA,commonName)) #replace blanks with NAs
+
+#write to geopackage
+st_write(AWI_species,
+         paste0(outputFolder,'/AWI_England_1km_',year,'.gpkg'),
+         layer = 'AWI_species',driver='GPKG',append=TRUE)
+
+#view geopackage
+sf::st_layers(paste0(outputFolder,'/AWI_England_1km_',year,'.gpkg'))
+```
+
+```{r AWIanalysis, eval=T}
+# total monads
+Engtotal <- nrow(AWI_poly)
+# 27 monads requiring further survey
+namonad <- nrow(AWI_poly[is.na(AWI_poly$totAWI),])
+# number of monads with 0 indicators present
+absentMonads <- AWI_poly %>% filter(totAWI==0) %>% nrow()
+#number of monads with 1 or more indicator present
+presentMonads <- AWI_poly %>% filter(totAWI>0) %>% nrow()
+#number of monads with 1 or more indicator present
+tenMonads <- AWI_poly %>% filter(totAWI>=10) %>% nrow()
+#summary of data
+summary(AWI_poly$totAWI)
+#ggplot(AWI_poly, aes(x=totAWI)) +
+ # geom_histogram()  + xlab("Number of Ancient Woodland Indicators per monad")
+
+```
+
+ * `r namonad` monads with NA where survey coverage is below `r surveyCov` recorder day threshold (`r round(namonad/Engtotal*100,digits=2)`% of English monads)
+ * `r absentMonads` monads where no Ancient woodland indicators are present (`r round(absentMonads/Engtotal*100,digits=2)`% of English monads)
+ * `r presentMonads` monads where at least one Ancient woodland indicators are present (`r round(presentMonads/Engtotal*100,digits=2)`% of English monads)
+ * `r tenMonads` monads have at least 10 Ancient woodland indicators are present (`r round(tenMonads/Engtotal*100,digits=2)`% of English monads)
+
+``` {r AWIregion, eval=T}
+# plot with range limits
+AWIplot <- ggplot(AWI_poly, aes(x=totAWI, fill=region)) +
+  geom_histogram(show.legend = F)  + xlab("Number of Ancient Woodland Indicators per monad") +
+  xlim(1,138)
+AWIplot + facet_wrap(~region)
+
+```
+ 
+
+### 5. Create RST species 1km layers for geodatabase
+*BotanicalHeatMaps_Indicators_1970_20211*
+ 
+* These layers are created for tree screening at the monad 1km scale. They include data per monad of the number of Rare, Scarce and threatened  (RST) plant species and the number of positive habitat priority indicator (PHPI) species, with these also broken down by broad habitat.
+* As above, it has been assumed that where there are no records for a monad but good survey coverage (above baseline recorder days), then no indicators are present, and where there isnt good coverage and a monad is recorded as 0, this has been updated to NA, representing a need for further survey.
+* for writing out for use with Arc software, the NA (no data) records have been given the value -9999.  
+
+```{r botanicalDBspecies, eval=T}
+
+#RST species
+priority 
+#load monad survey data
+Eng_surveyEffort <-st_read(paste0(outputFolder,'Eng_OS_monad_surveyEffort.shp'))
+
+#filter to those in monad template and standardise names
+priority_clean <- priority  %>% 
+  dplyr::select(monad, species=group, commonName=vernacular, GBstatus=Rare_and_s, lastRecorded=latest_dat) %>%
+  filter(monad %in% Eng_surveyEffort$monad) %>%
+  mutate(commonName = ifelse(commonName=="",NA,commonName))
+
+```
+
+### 6. Create main table for indicators geodatabase
+
+```{r botanicalDBmainTable, eval=T}
+surveyCovThres <- 3
+# RST columns for the main table
+priorityTable <- priority_clean %>% 
+  mutate(National_Rare=ifelse(GBstatus=="NR"|GBstatus=="NR,NS",1,0)) %>%
+  mutate(National_Scarce=ifelse(GBstatus=="NS"|GBstatus=="NR,NS",1,0)) %>% 
+  group_by(monad) %>% 
+  summarise(totPriority=n(), GB_Rare=sum(National_Rare),GB_Scarce=sum(National_Scarce))
+
+# join to monad grid to create main table
+mainTable <- Eng_surveyEffort %>% 
+  select(monad,region,RDays_40) %>%  
+  mutate(surveyCov = ifelse(RDays_40<surveyCov,"poor survey coverage", "good survey coverage")) %>%
+  left_join(priorityTable, by='monad') %>% #fill NAs with 0
+  mutate(RSTsp= ifelse(is.na(totPriority), 0,totPriority),
+         GB_Rare = ifelse(is.na(GB_Rare), 0, GB_Rare),
+         GB_Scarce = ifelse(is.na(GB_Scarce), 0, GB_Scarce)) %>% #fill in -9999 where 0 indicators and survey effort is poor 
+  mutate(RSTsp= ifelse(RDays_40<surveyCovThres & RSTsp == 0,-9999,RSTsp),
+         GB_Rare = ifelse(RDays_40<surveyCovThres & GB_Rare == 0, -9999, GB_Rare),
+         GB_Scarce = ifelse(RDays_40<surveyCovThres & GB_Scarce == 0, -9999, GB_Scarce)) %>% select(monad,region,RDays_40,surveyCov,RSTsp,GB_Rare,GB_Scarce,geometry)
+
+
+## check names at this point in case these have changed! 
+
+# clean names
+combined <- combined_count %>% 
+  filter(monad %in% Eng_surveyEffort$monad) %>% 
+  select(monad, allHabs=total_freq, 
+         arable = Arable_ind, 
+         boundary=Boundary_a, 
+         coastal = Coastal_in,
+         fenMarshSwamp = Fen_marsh_,
+         freshwater=Freshwater, 
+         grassland=Grassland_, 
+         heathBog = Heath_and_,
+         inlandRock = Inland_roc,
+         montane = Montane_in,
+         woodland=Woodland_i )
+
+# join to rest of the data
+mainTable <- mainTable %>% left_join(combined, by='monad') %>% 
+  mutate(allHabs = ifelse(allHabs == 0 & RDays_40 < surveyCovThres, -9999, allHabs)) %>%
+  mutate(arable = ifelse(arable == 0 & RDays_40 < surveyCovThres, -9999, arable))  %>%
+mutate(boundary = ifelse(boundary == 0 & RDays_40 < surveyCovThres, -9999, boundary))  %>%
+  mutate(coastal = ifelse(coastal == 0 & RDays_40 < surveyCovThres, -9999, coastal))  %>%
+  mutate(fenMarshSwamp = ifelse(fenMarshSwamp == 0 & RDays_40 < surveyCovThres, -9999, fenMarshSwamp))  %>%
+  mutate(freshwater = ifelse(freshwater == 0 & RDays_40 < surveyCovThres, -9999, freshwater))  %>%
+  mutate(grassland = ifelse(grassland == 0 & RDays_40 < surveyCovThres, -9999, grassland))  %>%
+  mutate(heathBog = ifelse(heathBog == 0 & RDays_40 < surveyCovThres, -9999,heathBog))  %>%
+  mutate(inlandRock = ifelse(inlandRock == 0 & RDays_40 < surveyCovThres, -9999,inlandRock))  %>%
+  mutate(montane = ifelse(montane == 0 & RDays_40 < surveyCovThres, -9999, montane))  %>%
+  mutate(woodland = ifelse(woodland == 0 & RDays_40 < surveyCovThres, -9999, woodland))
+
+# convert any remaining NAs to -9999 value so can be read in all GI softwares
+ mainTable <- mainTable %>% 
+   mutate(across(RSTsp:woodland, ~ replace_na(.x,-9999)))
+
+# write out layers to geopackage
+st_write(mainTable,paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),'BotanicalIndicators_England_1km',driver='GPKG')
+st_write(priority_clean,paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),'RSTplants_England_species_1km',driver='GPKG',append=TRUE)
+
+#view geopackage
+st_layers(paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'))
+
+```
+
+### 7. Create habitat indicator layers for geodatabase
+
+```{r habspecies, eval=T}
+#reformat combined 1km species table
+habSpecies <- combined_species %>% filter(monad_2_ %in% Eng_surveyEffort$monad) %>%
+  select(monad = monad_2_, 
+         species=group, 
+         commonName=vernacular,
+         arable = Arable_ind, 
+         boundary=Boundary_a, 
+         coastal = Coastal_in,
+         fenMarshSwamp = Fen_marsh_,
+         freshwater=Freshwater, 
+         grassland=Grassland_, 
+         heathBog = Heath_and_,
+         inlandRock = Inland_roc,
+         montane = Montane_in,
+         woodland=Woodland_i,
+         lastRecorded = latest_dat )
+
+#species lists per monad
+species_monad <- habSpecies %>% select(monad, species, commonName, lastRecorded)
+st_write(species_monad,paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),'PHPI_England_species_1km',driver='GPKG',append=TRUE)
+
+#species to broad habitats table
+habSpecies <- habSpecies %>% select(species, commonName,arable:woodland)%>% unique() 
+species_match <- habSpecies %>%  
+   mutate(across(arable:woodland, ~ if_else(.x=='match',1,0))) %>%
+   mutate(across(arable:woodland, ~ replace_na(.x,0)))
+st_write(species_match,paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'),'broadHabitat_associated_species',driver='GPKG',append=TRUE)
+
+#view geopackage
+st_layers(paste0(outputFolder,'/BotanicalHeatMaps_Indicators_1970_2021.gpkg'))
+
+```
+
+### 8. Create high res RST plant species layer at 100k for a geodatabase
+*BotanicalHeatMaps_PrioritySp100m_1970_20211*
+
+```{r priority100, eval=F}
+## subset countries to England
+England <- countries %>% dplyr::filter(CTRY20NM == 'England') %>% st_make_valid()
+
+# unique spatial grid for England
+hecGrid <- priority_100 %>% select(hectare) %>% unique() %>% 
+  st_crop(England) %>% st_intersection(England)
+
+# add in regions
+hectare_region <- hecGrid %>% st_centroid() %>% st_intersection(regions) %>% st_drop_geometry()
+hecGrid_region <-hecGrid %>% left_join(hectare_region[,c('hectare','RGN20NM')], by='hectare') %>% rename(region =RGN20NM)
+
+#write species table out
+species_table <- priority_100 %>% st_drop_geometry() %>% select(hectare, species=group, commonName=vernacular, GBstatus=Rare_and_s, lastRecorded=latest_dat) %>% filter(hectare %in% hecGrid_region$hectare)
+
+#summmarise species count per hectare
+# priorityTable <- species_table %>% 
+#   mutate(National_Rare=ifelse(GBstatus=="NR"|GBstatus=="NR,NS",1,0)) %>%
+#   mutate(National_Scarce=ifelse(GBstatus=="NS"|GBstatus=="NR,NS",1,0)) %>% 
+#   group_by(hectare) %>% 
+#   summarise(RSTsp=n(), GB_Rare=sum(National_Rare),GB_Scarce=sum(National_Scarce))
+priorityTable <- species_table %>% 
+  mutate(National_Rare=ifelse(GBstatus=="rare",1,0)) %>%
+  mutate(National_Scarce=ifelse(GBstatus=="scarce",1,0)) %>% 
+  group_by(hectare) %>% 
+  summarise(RSTsp=n(), GB_Rare=sum(National_Rare),GB_Scarce=sum(National_Scarce))
+# join to hectare grid  to create main table
+mainTable <- hecGrid_region %>% 
+  left_join(priorityTable, by='hectare') 
+
+#write as geopackage
+st_write(mainTable,paste0(outputFolder,'/BotanicalHeatMaps_RSTSp100m_1970_2021.gpkg'),'RSTplantSpecies_England_100m',driver='GPKG')
+st_write(species_table,paste0(outputFolder,'/BotanicalHeatMaps_RSTSp100m_1970_2021.gpkg'),'RSTplantSpecies_species_England_100m',driver='GPKG',append=TRUE)
+
+
+#view geopackage
+st_layers(paste0(outputFolder,'/BotanicalHeatMaps_RSTSp100m_1970_2021.gpkg'))
+
+```
+
+## Assumptions and Considerations for use
+
+There are several assumptions made throughout the analysis which are key to consider when using these data: 
+
+*	These maps provide an indication of areas where botanically valuable habitats are present to help guide tree planting decisions. However, there are a number of caveats that need to be taken into account when using them. Although detailed, they are not comprehensive, relying on data collected by volunteers often at a coarse capture resolution. Our analysis also makes assumptions on what constitutes ‘good’ recording coverage for a monad. When using these maps for the purpose of tree screening, they should also be consulted alongside other environmental datasets to assess site suitability. 
+*	This analysis uses recorder days as a proxy for survey coverage. This is a measure of the number of days where more than 40 species have been recorded during a single visit. However, there is regional bias in species diversity decreasing from south to north. Similarly, many coastal monads contain little land and therefore have fewer species present.
+*	Crucially, some sites chosen for tree planting may have priority species or habitat indicators present that are not shown on the maps, as they have not been visited or well recorded by BSBI recorders. For these sites, field surveys will be required. Therefore, these maps should be used with caution and local site experts should be consulted wherever possible. 
+*	The status of priority species is currently flagged as those which are rare and/or threatened at the GB scale. Use of equivalent species at the England-level would identify a different pool of priority species. However, a review of the species list demonstrated that the majority of species are included within the positive indicator lists, although with slightly different threatened and rare statuses noted. Globally or highly restricted endemic species were not reviewed, although many are likely to fall within the national threatened, rare and scarce species lists.
+* Similarly, some local priority species may not necessarily mean they are a national priority species, and so local environmental teams may be aware of other key species to consider when planning actions on the ground.
+*	The variation in survey coverage by BSBI recorders will also greatly impact the coverage of priority species and habitat indicators on these maps; wherever possible we have attempted to alleviate some of this bias through the localised benchmarking used to produce the botanical value map. Survey coverage also varies with the capture resolution of recording. Here we have only used records captured at the monad scale (1 x 1 km) however this does present a notable difference with areas which have historically captured data at lower resolution, with a defined difference notable between Cornwall and Devon.
+
+
