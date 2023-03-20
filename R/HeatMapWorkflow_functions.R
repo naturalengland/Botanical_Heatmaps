@@ -1,7 +1,8 @@
 
 #title: "Botanical Heatmap Workflow - Functions script"
 #author: "Natural England"
-#date: "16/03/2021"
+#creation date: "16/03/2021"
+#last edited: "18/03/2023"
 #output: html_document
 
   
@@ -125,7 +126,7 @@ classifyTetHabs <- function(shapefile = Ind_monad_myriad,
 #' @param levels data frame of the classes and proportions to classify based on surrounding neighbours
 #' @param movingDist distance value in km of distance radius for the neighbourhood
 #' @param outfolder folder path to save the outputs
-#'
+#' @param workers set number of workers for parallel processing
 #' @return
 #' @export
 #'
@@ -137,14 +138,17 @@ classifyMovingWindow <- function(shapefile = Ind_monads,
                                  levels = data.frame(cat=c("low","moderate","high"),
                                                      max= c(0.1,0.2,1)),
                                  movingDist = neighbour_dist(25),
-                                 outfolder ='IndicatorBaselines/MovingWindow/' ){
+                                 outfolder ='IndicatorBaselines/MovingWindow/',
+                                 workers = availableCores()-1){
   #select monad field
   allMonads <- shapefile  %>% select(monad) 
   
-  #iterate through monads to find moving hectads
-  future::plan(multisession, workers = availableCores()-1)
-
+  # set parallel processing options
+  future::plan(multisession, workers = workers)
+  
+#iterate through monads to find moving window
  moving_neighbours<- future_map(1:length(allMonads$monad),.f=function(i){
+   #set up environment
     options(future.rng.onMisuse="ignore")
     set.seed(42)
     furrr_options(seed=42)
@@ -162,7 +166,6 @@ classifyMovingWindow <- function(shapefile = Ind_monads,
     # get total number habitat indicators present in the moving neighbour window
     Tot_indicators <- hab_species %>% filter(monad %in% neighbours$monad) %>% 
       dplyr::select(species) %>% unique() %>% nrow()
-    
     #change to NA and set up col names
     IndMonad <- shapefile %>% st_drop_geometry() %>% 
       select(monad, total_no = !!habType) %>% 
@@ -188,14 +191,15 @@ classifyMovingWindow <- function(shapefile = Ind_monads,
   
   #write out summary
   write.csv(moving_df,paste0(outfolder,habType,'.csv'))  
-  
-  out_hectad <- shapefile %>% select(monad) %>% left_join(moving_df[,c('monad','total_no','valueCat')], by='monad') 
+  #join back to original monad shapefile
+  out_monad <- shapefile %>% select(monad) %>% 
+    left_join(moving_df[,c('monad','total_no','valueCat')], by='monad') 
   #write out spatial layer
-  st_write(out_hectad,paste0(outfolder,habType,'_mw.shp'), delete_layer = T)
+  st_write(out_monad,paste0(outfolder,habType,'_mw.shp'), delete_layer = T)
   
   ##plot ##
-  hab_monad <- out_hectad %>% mutate(valueCat =  factor(valueCat,
-                                                        levels=c('no indicators, poor survey coverage','no indicators,good survey coverage',"Low","Moderate","High"))) 
+  hab_monad <- out_monad %>% 
+    mutate(valueCat =  factor(valueCat,levels=c('no indicators, poor survey coverage','no indicators,good survey coverage',"Low","Moderate","High"))) 
   green <- c('#afafaf','#f8f8fa',"#BAE4B3",
              "#31A354", "#006D2C")
   map1 <- tm_shape(hab_monad) + tm_fill(col='valueCat', palette = green, reverse=T,title = str_wrap(paste0('Botanical value - ',habType),width=10)) + tm_scale_bar(position=c("right", "bottom"))

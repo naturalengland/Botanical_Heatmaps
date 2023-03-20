@@ -1,21 +1,22 @@
 ## Botanical heatmaps workflow: data validation script 
 #author: "Natural England"
-#date: "17/03/2021"
+#creation date: "17/03/2021"
+#last edited: "18/03/2023"
 #description: Script for validating how the botanical heatmaps and botanical value map compare with open source datasets describing sensitive sites for plant communities. 
 
+#load libraries
 library(rgdal)
 library(sf)
 library(dplyr)
 library(tidyr)
-setwd('D:/NE/Work/BSBI_HeatMaps/')
 
 #----------------------------------------
 # 1. SSSI sites
 
 #priority species indicators
-botanicalIndicators <- st_read('Products/BotanicalHeatMaps_Indicators_1970_2021.gpkg',layer='BotanicalIndicators_England_1km')
+botanicalIndicators <- st_read('BotanicalHeatMaps_Indicators_1970_2021.gpkg',layer='BotanicalIndicators_England_1km')
 #load in SSSI boundaries
-sssiBounds <- st_read('DataLayers/Sites_of_Special_Scientific_Interest_(England)/Sites_of_Special_Scientific_Interest__England____Natural_England.shp')
+sssiBounds <- st_read('Sites_of_Special_Scientific_Interest__England____Natural_England.shp')
 #extract monads for SSSIs
 sssiMonads <- st_intersection(sssiBounds,botanicalIndicators) 
 sssiMon <- sssiMonads %>% st_drop_geometry() %>% 
@@ -94,8 +95,8 @@ write.csv(tetradSumm,'Validation/botanicalValue_tetrad_England_1km_SSSIsumm.csv'
 #2. Ancient woodland inventory
 
 #ancient woodland indicators
-AWIndicators <- st_read('D:/NE/Work/BSBI_HeatMaps/Products/AWI_England_1km.gpkg',layer='AWI_poly')
-AWI <- st_read('DataLayers/Ancient_Woodland_(England)/Ancient_Woodland___Natural_England.shp')
+AWIndicators <- st_read('AWI_England_1km.gpkg',layer='AWI_poly')
+AWI <- st_read('Ancient_Woodland___Natural_England.shp')
 awiMonads <- st_intersection(AWI,AWIndicators) 
 awiMon <- awiMonads %>% st_drop_geometry() %>% 
   select(monad,RDays_40,totAWI) %>% 
@@ -135,10 +136,10 @@ total <- nrow(AWIndicators)
 #--------------------------------------------------------------
 
 #3. Priority habitats inventory
-central <- st_read('DataLayers/Priority_Habitat_Inventory__Central___England_-shp/Priority_Habitats_Inventory__Central___England____Natural_England.shp')
-north <- st_read('DataLayers/Priority_Habitat_Inventory__North___England_-shp/Priority_Habitats_Inventory__North___England____Natural_England.shp')
-south <- st_read('DataLayers/Priority_Habitat_Inventory__South___England_-shp/Priority_Habitats_Inventory__South___England____Natural_England.shp')
-botanicalIndicators <- st_read('D:/NE/Work/BSBI_HeatMaps/Products/BotanicalHeatMaps_Indicators_1970_2021.gpkg',layer='BotanicalIndicators_England_1km')
+central <- st_read('Priority_Habitats_Inventory__Central___England____Natural_England.shp')
+north <- st_read('Priority_Habitats_Inventory__North___England____Natural_England.shp')
+south <- st_read('Priority_Habitats_Inventory__South___England____Natural_England.shp')
+botanicalIndicators <- st_read('BotanicalHeatMaps_Indicators_1970_2021.gpkg',layer='BotanicalIndicators_England_1km')
 
 #phi intersecting
 centralMonads <- st_intersection(central,botanicalIndicators) 

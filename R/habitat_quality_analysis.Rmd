@@ -1,11 +1,12 @@
 ---
 title: "Botanical Value MapWorkflow - Habitat quality analysis"
 author: "Natural England"
-date: "16/03/2022"
+creation date: "16/03/2022"
+last edited: "18/03/2023"
 output:
   html_document:
     includes:
-      before_body: 'D:/Github/BotanicalHeatmaps/images/header.html'
+      before_body: './images/header.html'
 always_allow_html: yes
 ---
 
@@ -31,7 +32,7 @@ The botanical value map is a categorised map identifying areas of high, moderate
 
 The botanical value of a monad will be determined by two steps:
 
-1. A first screen of sites where priority species have been recorded. These are species which are GB rare, scarce or threatened species. These are given a "High" value status, where any listed priority species have been recorded within a monad between 1970 and 2021.
+1. A first screen of sites where priority species have been recorded. These are species which are GB rare, scarce or threatened species. These are given a "High" value status, where any listed conservation species have been recorded within a monad.
 
 2. Habitat quality is then assessed through observing the number of positive habitat indicators present per monad. These indicators have been determined from the BSBI axiophyte list, common standards monitoring and ancient woodland indicator species. The total for the monad has then been compared to the total species indicators present in the surrounding neighbourhood in order to alleviate some of the spatial bias in the data. Different methods for establishing the neighbourhood as well as for the proportional thresholds to use for low, moderate and high categories were trialled.
 
