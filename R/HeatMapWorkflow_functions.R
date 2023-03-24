@@ -154,35 +154,36 @@ classifyMovingWindow <- function(shapefile = Ind_monads,
     furrr_options(seed=42)
     #select monad
     monadShape <- allMonads %>% filter(monad==allMonads$monad[i]) 
-    #buffer to distance
+    #buffer to distance to give neighbourhood around selected monad 
     monadBuff <- monadShape %>% suppressMessages(st_centroid()) %>% st_buffer(movingDist)
     #extract neighbouring monads
     neighbours <- allMonads[st_intersects(allMonads, monadBuff) %>% lengths > 0,]
-    #join all species with species hab lookup
+    #collate all species present with species hab lookup
     hab_species <- all_species %>% 
       left_join(species_hab[,c('species',habType)], by='species') %>% 
       filter(get(habType) == 1) %>% 
       select(monad, species, lastRecorded)
-    # get total number habitat indicators present in the moving neighbour window
+    # get total number of habitat indicators present in the  neighbourhood window
     Tot_indicators <- hab_species %>% filter(monad %in% neighbours$monad) %>% 
       dplyr::select(species) %>% unique() %>% nrow()
-    #change to NA and set up col names
+    # collate information for monad
     IndMonad <- shapefile %>% st_drop_geometry() %>% 
-      select(monad, total_no = !!habType) %>% 
-      filter(monad==allMonads$monad[i]) %>% 
-      mutate(total_no = ifelse(total_no == -9999, NA,total_no)) %>% 
-      mutate(p1=Tot_indicators,pcnt = (total_no/p1))
+      select(monad, total_no = !!habType) %>%  #select monad name and input total no. found of habitat
+      filter(monad==allMonads$monad[i]) %>%  # filter to monad
+      mutate(total_no = ifelse(total_no == -9999, NA,total_no)) %>%  # set NA values
+      mutate(p1=Tot_indicators,pcnt = (total_no/p1)) # calculate percentage of total sp present in monad
     IndMonad
   }, .progress=TRUE)
   
-  #compile
+  #compile all monads
   moving_df <-do.call(rbind.data.frame, moving_neighbours)
   
-  #classify
-  for(k in levels$cat){
-    lev_cat <- levels %>% filter(cat==k)
-    moving_df <- moving_df %>% mutate({{k}} := p1*lev_cat$max) 
+  # find category thresholds
+  for(k in levels$cat){ #iterate per value category
+    lev_cat <- levels %>% filter(cat==k) # filter to category
+    moving_df <- moving_df %>% mutate({{k}} := p1*lev_cat$max)  #find the max class value
   }
+  #classify by value categories
   moving_df <- moving_df %>% 
     mutate(valueCat = ifelse(is.na(total_no),'no indicators, poor survey coverage', 
                              ifelse(total_no==0,'no indicators,good survey coverage',
